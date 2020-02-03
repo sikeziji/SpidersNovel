@@ -1,0 +1,115 @@
+package spider.impl.download;
+
+import spider.Enum.NovelSiteEnum;
+import spider.configuration.configuration;
+import spider.entitys.Chapter;
+import spider.entitys.ChapterDetail;
+import spider.impl.chapter.DefaultChapterDetailSpider;
+import spider.interfaces.IChapterDetailSpider;
+import spider.interfaces.IChapterSpider;
+import spider.interfaces.INovelDownload;
+import spider.util.ChapterSpiderFactory;
+import spider.util.NovelSpiderUtil;
+
+
+import java.io.File;
+import java.util.*;
+import java.util.concurrent.*;
+
+/**
+ * 如何实现多线程下载任意网站的小说
+ * 1.拿到该网站的某本小说的所有章节：章节列表
+ * 2.通过计算，将这些章节分配给指定数量的线程，让他们去解析，然后保存到文本 *  文件中
+ * 3.通知主线程，将这些零散的小文件合并成一个大文件。最后将那些分片的小文件 *  删除掉。
+ * <p>
+ * FileName: NovelDownload
+ * Author:   Wangj
+ * Date:     2018/6/29 14:13
+ */
+public class NovelDownload implements INovelDownload {
+
+
+    @Override
+    public String download(String url, configuration configuration) {
+        IChapterSpider spider = ChapterSpiderFactory.getChapterSpider(url);//通过指定URL实现IChapterSpider类方法
+        List<Chapter> chapters = spider.getsChapters(url);//返回章节列表
+        //某个线程下载完毕后，你要告诉主线程我下载好了
+        //所有线程都下载好了，合并
+        int size = configuration.getSize();//线程的Size
+
+        //用章节列表的总章数 除 线程的Size 并且用ceil函数向上取整数 : 1222章/100 = 13
+        int maxThreadSize = (int) Math.ceil(chapters.size() * 1.0 / size);
+        Map<String, List<Chapter>> downloadTaskAlloc = new HashMap<>();
+
+
+        for (int i = 0; i < maxThreadSize; i++) {
+            int formIndex = i * (configuration.getSize());//i = 1 ；formIndex = 200；
+            int toIndex = i == maxThreadSize - 1 ? chapters.size() : i * (configuration.getSize()) + configuration.getSize();//如果不是最后一个线程 （i=2)就从 200 - 299章
+            downloadTaskAlloc.put(formIndex + "-" + toIndex, chapters.subList(formIndex, toIndex));//章节列表中从formIndex 开始到 toIndex结束
+        }
+        //线程池 ， 设置线程池中线程的固定数量
+        ExecutorService service = Executors.newFixedThreadPool(maxThreadSize);
+        //将Map中的数据存放如 KeySet中
+        Set<String> keySet = downloadTaskAlloc.keySet();
+        List<Future<String>> tasks = new ArrayList<>();
+
+        //通过这两段代码就可以创建缺失的路径
+        String savePath = configuration.getPath() + "/" + NovelSiteEnum.getEnumByUrl(url).getUrl() + "/";
+        new File(savePath).mkdirs();
+
+        for (String key : keySet) {
+            tasks.add(service.submit(new DownloadAllCallable(savePath + "/" + key + ".txt", downloadTaskAlloc.get(key), configuration.getTryTimes())));
+        }
+
+        service.shutdown();
+        for (Future<String> future : tasks) {
+            try {
+                System.out.println(future.get() + ",下载完成!");
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            } catch (ExecutionException e) {
+                e.printStackTrace();
+            }
+        }
+        NovelSpiderUtil.multiFileMerge(savePath, null, true, chapters.get(0).getTitle());
+        System.out.println(chapters.get(1).getTitle());
+        return savePath + "/merge" + chapters.get(1).getTitle() + ".txt";
+    }
+
+    @Override
+    public String downloadChapterDetail(String url, final configuration configuration) {
+        IChapterDetailSpider spider = new DefaultChapterDetailSpider();//通过指定URL实现IChapterSpider类方法
+        final ChapterDetail chapters = spider.getChapterDetail(url);//返回章节列表
+        //某个线程下载完毕后，你要告诉主线程我下载好了
+        //所有线程都下载好了，合并
+        int size = configuration.getSize();//线程的Size
+
+
+        //线程池 ， 设置线程池中线程的固定数量
+        ExecutorService service = Executors.newFixedThreadPool(2);
+        //将Map中的数据存放如 KeySet中
+        List<Future<String>> tasks = new ArrayList<>();
+
+        //通过这两段代码就可以创建缺失的路径
+        final String savePath = configuration.getPath() + "/" + NovelSiteEnum.getEnumByUrl(url).getUrl() + "/";
+        new File(savePath).mkdirs();
+
+
+        service.submit(new DownloadCallable(savePath + "/"+chapters.getTitle()  + ".txt",chapters , configuration.getTryTimes()));
+
+        service.shutdown();
+        for (Future<String> future : tasks) {
+            try {
+                System.out.println(future.get() + ",下载完成!");
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            } catch (ExecutionException e) {
+                e.printStackTrace();
+            }
+        }
+        return savePath  + chapters.getTitle() + ".txt";
+    }
+
+
+}
+
